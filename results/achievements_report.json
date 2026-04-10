@@ -1,0 +1,137 @@
+{
+  "pgm_type": "hierarchical",
+  "achievements": {
+    "stage1_generator": true,
+    "stage2_perturbation_engine": true,
+    "stage3_pgm_inference": true,
+    "stage4_autoencoder": true,
+    "stage5_pgm_on_reconstruction": true,
+    "stage6_latent_screening": true,
+    "stage7_causal_alignment": true,
+    "stage7a_p_causal_alignment": false,
+    "stage7b_lambda_causal_alignment": true,
+    "step3_multiseed_reproducibility": true,
+    "step4_vae_comparison": true
+  },
+  "success_levels": {
+    "level1": true,
+    "level2": true,
+    "level3": true,
+    "level4": true
+  },
+  "stage3": {
+    "corr_w": 0.9913013480658145,
+    "corr_z": 0.9827899290689136,
+    "corr_b": 0.8933885844806262,
+    "corr_p": 0.6234632780837466,
+    "mae_w": 15.568141083328344,
+    "mae_z": 0.7693689659837712,
+    "mae_b": 0.12733757828695283,
+    "sv_ratio": 0.39992114973632065,
+    "corr_lambda": 0.9913013480658145
+  },
+  "stage4_recon_corr_ae": 0.9917487960930507,
+  "stage4_recon_corr_pca": 0.9452244737529322,
+  "stage5_lambda_drop": -0.003376780981418026,
+  "stage5_p_drop": 0.4018771324026208,
+  "stage6_labels": [
+    "lambda-dominated",
+    "lambda-dominated",
+    "mixed",
+    "lambda-dominated"
+  ],
+  "stage7_best_dim": 3,
+  "stage7_best_cosine": 0.5006364800814094,
+  "stage7_z_score": 3.5364528745521384,
+  "multiseed_results": [
+    {
+      "seed": 0,
+      "corr_lambda": 0.05916226699234357,
+      "corr_p": 0.22686349873769754,
+      "recon_corr": 0.9917487960930507,
+      "best_dim": 3,
+      "best_cosine": 0.5006364800814094,
+      "z_score": 3.5364528745521384,
+      "z_score_p": 0.0,
+      "labels": [
+        "lambda-dominated",
+        "lambda-dominated",
+        "mixed",
+        "lambda-dominated"
+      ]
+    },
+    {
+      "seed": 42,
+      "corr_lambda": 0.0958825075511184,
+      "corr_p": 0.2627917502779235,
+      "recon_corr": 0.9890041086790408,
+      "best_dim": 2,
+      "best_cosine": 0.5943343406229163,
+      "z_score": 4.193112133275629,
+      "z_score_p": 0.0,
+      "labels": [
+        "lambda-dominated",
+        "lambda-dominated",
+        "lambda-dominated",
+        "lambda-dominated"
+      ]
+    },
+    {
+      "seed": 123,
+      "corr_lambda": 0.0665063972214164,
+      "corr_p": 0.25962974323944854,
+      "recon_corr": 0.9880638482118784,
+      "best_dim": 3,
+      "best_cosine": 0.5467507364170598,
+      "z_score": 3.8596337156828597,
+      "z_score_p": 0.0,
+      "labels": [
+        "lambda-dominated",
+        "lambda-dominated",
+        "lambda-dominated",
+        "lambda-dominated"
+      ]
+    },
+    {
+      "seed": 1234,
+      "corr_lambda": 0.10347317465458936,
+      "corr_p": 0.2349306880479879,
+      "recon_corr": 0.9901572923877339,
+      "best_dim": 2,
+      "best_cosine": 0.3061244340030983,
+      "z_score": 2.1732612792222614,
+      "z_score_p": 0.0,
+      "labels": [
+        "lambda-dominated",
+        "lambda-dominated",
+        "lambda-dominated",
+        "lambda-dominated"
+      ]
+    },
+    {
+      "seed": 12345,
+      "corr_lambda": 0.002552749156887697,
+      "corr_p": 0.263961749133529,
+      "recon_corr": 0.9871583388281374,
+      "best_dim": 3,
+      "best_cosine": 0.2670557014965378,
+      "z_score": 1.8994573227737617,
+      "z_score_p": 0.0,
+      "labels": [
+        "lambda-dominated",
+        "mixed",
+        "lambda-dominated",
+        "lambda-dominated"
+      ]
+    }
+  ],
+  "vae_recon_corr": 0.9872076691591599,
+  "vae_best_cosine": 0.45665470279510384,
+  "vae_z_score": 3.228217007657684,
+  "vae_labels": [
+    "lambda-dominated",
+    "lambda-dominated",
+    "lambda-dominated",
+    "lambda-dominated"
+  ]
+}

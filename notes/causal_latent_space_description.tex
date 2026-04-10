@@ -1,0 +1,1077 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{bm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds, calc}
+
+% ── TikZ styles ─────────────────────────────────────────────────────────────
+\tikzset{
+  lat/.style  = {circle, draw=black, fill=white, thick,
+                 minimum size=1.05cm, inner sep=1pt, font=\small},
+  obs/.style  = {circle, draw=black, fill=gray!22, thick,
+                 minimum size=1.05cm, inner sep=1pt, font=\small},
+  det/.style  = {circle, draw=black, fill=white, thick, double, double distance=1.8pt,
+                 minimum size=1.05cm, inner sep=1pt, font=\small},
+  hyp/.style  = {diamond, draw=black!70, fill=black!75, text=white,
+                 minimum size=0.72cm, inner sep=0pt, font=\scriptsize},
+  arr/.style  = {-{Stealth[length=6pt,width=5pt]}, thick, draw=black!70},
+  plate/.style= {draw, dashed, rounded corners=7pt, thick, inner sep=12pt},
+}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\NB}{\mathrm{NegBinom}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Beta}{\mathrm{Beta}}
+\renewcommand{\Gamma}{\mathrm{Gamma}}
+\newcommand{\Poisson}{\mathrm{Poisson}}
+\newcommand{\doop}{\mathrm{do}}
+\newcommand{\wh}{\hat{w}}
+\newcommand{\zh}{\hat{z}}
+\newcommand{\bh}{\hat{b}}
+\newcommand{\ph}{\hat{p}}
+\newcommand{\muh}{\hat{\mu}}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\title{\textbf{Causal Latent Space Sandbox}\\
+\large Mathematical Description of the Generative Pipeline,\\
+Inference, and Causal Alignment Evaluation}
+\author{}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ==========================================================================
+\section{Overview}
+% ==========================================================================
+
+This document provides a self-contained mathematical description of a
+computational sandbox designed to test whether unsupervised neural
+representations (autoencoders, VAEs) capture causal structure latent in
+single-cell-like count data.
+
+The pipeline has seven stages:
+\begin{enumerate}
+  \item Hierarchical probabilistic generative model (PGM) --- synthesises
+        count matrices with a known rank-1 causal factor.
+  \item Ground-truth interventions --- Pearl's \emph{do}-calculus applied
+        directly to the generative parameters.
+  \item Baseline PGM inference --- method-of-moments and SVD recovery of
+        all parameters from raw counts.
+  \item AutoEncoder (AE) / $\beta$-VAE training in log-expression space.
+  \item PGM inference on AE-reconstructed counts --- tests information
+        preservation.
+  \item Latent perturbation screening --- each AE dimension is perturbed
+        and the induced gene-expression shift is measured.
+  \item Causal alignment test --- the induced shift is compared against the
+        true causal loading vector $\bm{w}$ via cosine similarity.
+\end{enumerate}
+
+% ==========================================================================
+\section{Hierarchical Probabilistic Generative Model}
+\label{sec:pgm}
+% ==========================================================================
+
+\subsection{Generative process}
+
+Let $G$ denote the number of genes and $S$ the number of patients
+(samples). In the experiments reported here $G = 50$ and $S = 1000$.
+
+\paragraph{Gene-level parameters.}
+For each gene $g \in \{1,\ldots,G\}$ draw independently:
+\begin{align}
+  w_g   &\sim \N(0,\, \sigma_w^2), \label{eq:w_prior}\\
+  b_g   &\sim \N(\mu_b,\, \sigma_b^2), \label{eq:b_prior}\\
+  p_g   &\sim \Beta(\alpha,\, \beta). \label{eq:p_prior}
+\end{align}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Symbol & Meaning & Value\\
+\midrule
+$\sigma_w$ & loading standard deviation & $1.0$\\
+$\mu_b$    & log-baseline mean           & $1.5$\\
+$\sigma_b$ & log-baseline std            & $0.5$\\
+$\alpha$   & Beta shape (overdispersion) & $2.0$\\
+$\beta$    & Beta shape (overdispersion) & $5.0$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Sample-level causal factor.}
+For each patient $s \in \{1,\ldots,S\}$:
+\begin{equation}
+  z_s \sim \N(0,\,1). \label{eq:z_prior}
+\end{equation}
+This is the \emph{causal axis}: the single latent variable that drives
+correlated expression changes across all genes.
+
+\paragraph{Structured log-mean (rank-1 factor model).}
+\begin{equation}
+  \log \mu_{g,s} = w_g \, z_s + b_g,
+  \qquad
+  \mu_{g,s} = \exp(\log \mu_{g,s}).
+  \label{eq:logmu}
+\end{equation}
+The gene-by-patient log-expression matrix $\log M$ therefore has
+\emph{exactly rank 1 plus noise}: $\log M = \bm{w}\bm{z}^\top +
+\bm{b}\bm{1}^\top + \varepsilon$.
+
+\paragraph{Count model (Gamma--Poisson mixture / Negative Binomial).}
+A Negative Binomial distribution can be written as a Gamma--Poisson
+compound. For gene $g$ and patient $s$:
+\begin{align}
+  r_{g,s} &= \frac{\mu_{g,s}\, p_g}{1 - p_g}
+             \qquad \text{(NegBinom ``size'' or number-of-successes)},
+             \label{eq:r}\\
+  \Lambda_{g,s} &\sim \Gamma\!\left(r_{g,s},\;\frac{1-p_g}{p_g}\right),
+             \label{eq:gamma}\\
+  C_{g,s} &\sim \Poisson(\Lambda_{g,s}). \label{eq:poisson}
+\end{align}
+Marginalising over $\Lambda_{g,s}$ gives
+\begin{equation}
+  C_{g,s} \sim \NB\!\left(r_{g,s},\; p_g\right)
+\end{equation}
+with mean $\E[C_{g,s}] = \mu_{g,s}$ and variance
+$\Var[C_{g,s}] = \mu_{g,s} + \mu_{g,s}^2 / r_{g,s}$.
+The parameter $p_g$ controls \emph{overdispersion}: small $p_g$ (relative
+to the $\Beta(2,5)$ prior, $\E[p_g] \approx 0.29$) yields highly
+overdispersed counts.
+
+\begin{remark}
+The Gamma--Poisson representation is numerically exact for non-integer
+$r_{g,s}$, which arises because $r_{g,s}$ varies per patient via $\mu_{g,s}$.
+\end{remark}
+
+\subsection{Graphical model (plate notation)}
+\label{sec:pgm_plate}
+
+Figure~\ref{fig:pgm} shows the hierarchical PGM in standard plate notation.
+Shaded nodes are observed; open nodes are latent; double-ringed nodes are
+deterministic functions; diamonds are fixed hyperparameters.
+The outer plate replicates over genes $g = 1,\ldots,G$;
+the inner-right plate replicates over patients $s = 1,\ldots,S$.
+The node $\log\mu_{g,s}$ in the intersection plate is the bilinear
+interaction between the gene loading $w_g$ and the sample factor $z_s$.
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}
+
+  % ── Hyperparameters (outside all plates) ────────────────────────
+  \node[hyp]  (sw) at (-4.0,  2.25) {$\sigma_w$};
+  \node[hyp]  (mb) at (-4.0,  0.0) {\scriptsize$\mu_b,\sigma_b$};
+  \node[hyp]  (ab) at ( 3.0,  4.0) {\scriptsize$\alpha,\beta$};
+
+  % ── Gene-level latent nodes (inside gene plate only) ────────────
+  \node[lat]  (wg) at (-2.0,  2.25) {$w_g$};
+  \node[lat]  (bg) at (-2.0,  0.0) {$b_g$};
+  \node[lat]  (pg) at (3.0,  2.25) {$p_g$};
+
+  % ── Deterministic node (inside BOTH plates) ──────────────────────
+  \node[det]  (lm) at ( 0.0,  0.0) {$\log\mu_{g,s}$};
+
+  % ── Observed count (inside BOTH plates) ──────────────────────────
+  \node[obs]  (C)  at ( 3.0,  0.0) {$C_{g,s}$};
+
+  % ── Sample-level node: ABOVE gene plate, inside patient plate ───
+  % Gene plate top edge ≈ y=2.0 + inner sep (~0.8) = 2.8.
+  % Place z_s at y=4.0 so it sits clearly outside the gene plate.
+  \node[lat]  (zs) at (  0.0,  -2.0) {$z_s$};
+
+  % ── Arrows ──────────────────────────────────────────────────────
+  \draw[arr] (sw) -- (wg);
+  \draw[arr] (mb) -- (bg);
+  \draw[arr] (ab) -- (pg);
+
+  \draw[arr] (wg) -- (lm);
+  \draw[arr] (bg) -- (lm);
+  \draw[arr] (zs) -- (lm);
+
+  % Label sits beside the deterministic node, not on any single edge
+  \node[font=\scriptsize, text=black!55, above=0.55cm of lm, yshift=0.35cm]
+    {$\log\mu_{g,s} = w_g \cdot z_s + b_g$};
+
+  \draw[arr] (lm) -- (C)
+    node[midway, above, font=\scriptsize, text=black!60]
+    {$\mathrm{NB}(r_{g,s},p_g)$};
+
+  % p_g arc to C (overdispersion, gene-level only)
+  \draw[arr] (pg) -- (C);
+
+  % ── Gene plate: wg, bg, pg, lm, C  (NOT zs) ────────────────────
+  \begin{pgfonlayer}{background}
+    \node[plate, draw=red!60,
+          fit=(wg)(bg)(pg)(lm)(C),
+          inner xsep=18pt, inner ysep=20pt,
+          label={[red!60, font=\scriptsize\itshape]south east:%
+                 $g = 1 \ldots G$\enspace(genes)}]
+          (Gplat) {};
+  \end{pgfonlayer}
+
+  % ── Patient plate: zs, lm, C  (NOT wg/bg/pg) ───────────────────
+  \begin{pgfonlayer}{background}
+    \node[plate, draw=blue!55,
+          fit=(zs)(lm)(C),
+          inner xsep=18pt, inner ysep=18pt,
+          label={[blue!55, font=\scriptsize\itshape]south east:%
+                 $s = 1 \ldots S$\enspace(patients)}]
+          (Splat) {};
+  \end{pgfonlayer}
+
+\end{tikzpicture}
+\caption{%
+  Plate diagram of the hierarchical PGM.
+  \textbf{Outer red plate} ($G$ genes): gene-specific parameters
+  $w_g \sim \mathcal{N}(0,\sigma_w^2)$,
+  $b_g \sim \mathcal{N}(\mu_b, \sigma_b^2)$,
+  $p_g \sim \mathrm{Beta}(\alpha,\beta)$.
+  \textbf{Inner blue plate} ($S$ patients): patient causal factor
+  $z_s \sim \mathcal{N}(0,1)$.
+  The double-ringed deterministic node $\log\mu_{g,s} = w_g z_s + b_g$
+  sits at the intersection of both plates.
+  Counts $C_{g,s} \sim \mathrm{NB}(r_{g,s}, p_g)$ (shaded) are the
+  only observed quantities; all other nodes are latent.
+}
+\label{fig:pgm}
+\end{figure}
+
+\subsection{Biomedical interpretation}
+\label{sec:biomedical}
+
+The generative model is a deliberate abstraction of a real single-cell
+RNA-sequencing (scRNA-seq) experiment.  Each component has a direct
+biological counterpart.
+
+\begin{center}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{p{2.9cm} p{4.4cm} p{5.8cm}}
+\toprule
+\textbf{Model quantity} & \textbf{Biological meaning} & \textbf{Concrete example}\\
+\midrule
+Gene $g$ &
+  A single gene whose mRNA is counted &
+  \textit{TP53}, \textit{BRCA1}, any of 20\,000 human genes\\
+
+Patient / cell $s$ &
+  One biological sample (cell, patient, or bulk) &
+  A tumour biopsy; a single cell from a patient\\
+
+Count $C_{g,s}$ &
+  Raw mRNA read count for gene $g$ in sample $s$ &
+  UMI count from 10x Genomics sequencing\\
+
+$z_s$ — causal factor &
+  A continuous latent ``dose'' or state driving
+  coordinated gene-expression changes &
+  Tumour mutation burden, immune activation score,
+  disease severity, drug concentration,
+  developmental pseudotime\\
+
+$w_g$ — gene loading &
+  How strongly gene $g$ responds to a unit increase
+  in $z_s$ (positive $=$ up, negative $=$ down) &
+  Genes with large $|w_g|$ form the biological
+  \emph{signature} of the latent process\\
+
+$b_g$ — log-baseline &
+  Mean log-expression at $z_s = 0$
+  (constitutive, ``housekeeping'' level) &
+  High for ribosomal genes; low for rare
+  transcription factors\\
+
+$p_g$ — overdispersion &
+  Excess variability beyond Poisson (burst kinetics,
+  technical dropout, cell-to-cell noise) &
+  Low $p_g$ ($\approx 0.1$): bursty, variable genes;
+  high $p_g$ ($\approx 0.8$): stable housekeepers\\
+
+\midrule
+$\mathrm{do}(z_s \!\to\! z_s\!+\!\delta)$ &
+  A controlled perturbation that shifts the
+  biological state uniformly across all samples &
+  Adding a drug that activates a pathway; knocking
+  out a transcription factor; cytokine stimulus\\
+
+Causal alignment $\rho^*$ &
+  How much of the AE's latent space encodes
+  which genes respond to the perturbation &
+  Does the model separate ``drug-responsive genes''
+  from ``bystander genes''?\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Why this matters clinically.}
+In practice, $z_s$ might represent a patient's \emph{tumour microenvironment
+score} or their level of response to immunotherapy.
+If a neural representation truly encodes $z_s$ in one latent dimension,
+a clinician or drug-discovery researcher could in principle:
+\begin{enumerate}
+  \item \textbf{Stratify patients.}  Encode a new patient's transcriptome to
+        estimate their latent state $\hat{z}_s$ and assign them to a risk
+        group without needing an explicit biomarker panel.
+  \item \textbf{Predict perturbation effects \emph{in silico}.}  Shift that
+        latent coordinate by $+\delta$ and decode to predict which genes
+        would change under a proposed drug --- a virtual drug screen.
+  \item \textbf{Prioritise drug targets.}  Compare the predicted
+        gene-shift vector with the known transcriptional signature of
+        approved drugs (e.g.\ from the LINCS L1000 database) to rank
+        mechanistically matched candidates.
+  \item \textbf{Understand combination therapies.}  Perturb two latent
+        dimensions simultaneously to model synergistic or antagonistic
+        interventions.
+\end{enumerate}
+
+This is the central promise of \emph{causal representation learning} in
+biomedicine.  Our sandbox tests whether vanilla AEs and VAEs get
+step~1 right --- encoding the causal state $z_s$ into a recoverable
+latent direction --- before building the full clinical pipeline on top.
+
+\subsection{Identifiable causal structure}
+
+The causal factor $z_s$ is identifiable from observational data in
+principle: $\bm{w}\bm{z}^\top$ is the dominant rank-1 component of
+$\log M - \bm{b}\bm{1}^\top$.  However, nonlinear ICA theory
+(Appendix~\ref{sec:nica}) tells us that without additional structural
+constraints a general neural network cannot uniquely identify
+$z_s$---it can only recover some function thereof.  This motivates the
+downstream causal alignment test.
+
+% ==========================================================================
+\section{Ground-Truth Interventions}
+\label{sec:interventions}
+% ==========================================================================
+
+\subsection{Primary intervention: shift of the causal factor}
+
+The primary causal test uses Pearl's \emph{do}-operator applied to the
+sample factor:
+\begin{equation}
+  \doop(z_s := z_s + \delta), \quad \delta = 2.0, \quad \forall s.
+  \label{eq:do_z}
+\end{equation}
+Under this intervention all $z_s$ are shifted upward.  The expected
+gene-level effect on log-expression is:
+\begin{equation}
+  \Delta \log \mu_{g,s} = w_g \cdot \delta.
+  \label{eq:logmu_shift}
+\end{equation}
+Genes with positive $w_g$ increase in expression; genes with negative
+$w_g$ decrease.  The shift vector $\bm{w}\delta \in \R^G$ serves as the
+\emph{ground-truth causal direction} against which neural representations
+are evaluated.
+
+\subsection{Positive-control intervention: overdispersion shift}
+
+As a positive control, the overdispersion prior for a subset of target
+genes $\mathcal{T} = \{0,1,2\}$ is modified:
+\begin{equation}
+  p_g \sim \Beta(1.0,\; 5.0) \quad \text{for } g \in \mathcal{T},
+\end{equation}
+leaving all other parameters unchanged. This changes only $p_g$ (not
+$\mu_{g,s}$), providing a check on whether the AE encodes
+overdispersion separately from mean expression.
+
+% ==========================================================================
+\section{Baseline Inference from Counts}
+\label{sec:inference}
+% ==========================================================================
+
+\subsection{Method-of-Moments for Negative Binomial parameters}
+
+Given a count matrix $C \in \mathbb{Z}_{\geq 0}^{G \times S}$, per-gene
+method-of-moments estimators are:
+\begin{align}
+  \hat{\mu}_g &= \frac{1}{S}\sum_s C_{g,s}, \label{eq:mu_hat}\\
+  \hat{\sigma}^2_g &= \frac{1}{S-1}\sum_s (C_{g,s} - \hat{\mu}_g)^2,
+  \label{eq:sigma2_hat}
+\end{align}
+with excess variance floored at $0.1\,\hat{\mu}_g$ to avoid numerical
+instability:
+\begin{equation}
+  e_g = \max\!\left(\hat{\sigma}^2_g - \hat{\mu}_g,\; 0.1\,\hat{\mu}_g\right).
+  \label{eq:excess_var}
+\end{equation}
+The NegBinom parameter estimators follow:
+\begin{align}
+  \hat{\lambda}_g &= \frac{\hat{\mu}_g^2}{e_g}
+    \quad \text{(capped at } 100\text{)},
+  \label{eq:lambda_hat}\\
+  \hat{p}_g &= \frac{\hat{\mu}_g}{\hat{\mu}_g + e_g}.
+  \label{eq:p_hat}
+\end{align}
+
+\subsection{SVD-based recovery of the factor model}
+
+For the hierarchical model, parameters $\bm{w}$, $\bm{z}$, and $\bm{b}$
+are recovered from the log1p-transformed count matrix:
+\begin{equation}
+  X_{g,s} = \log(1 + C_{g,s}).
+\end{equation}
+
+\paragraph{Step 1 --- estimate log-baselines.}
+\begin{equation}
+  \hat{b}_g = \frac{1}{S}\sum_s X_{g,s}.
+\end{equation}
+
+\paragraph{Step 2 --- centre and compute rank-1 SVD.}
+Let $\tilde{X} = X - \hat{\bm{b}}\bm{1}^\top$. Compute the leading
+singular triplet $(u_1, \sigma_1, v_1)$ of $\tilde{X}$:
+\begin{equation}
+  \hat{w}_g = (U)_{g,1} \cdot \sigma_1, \qquad
+  \hat{z}_s = (V^\top)_{1,s}.
+  \label{eq:svd_recovery}
+\end{equation}
+Note that $\hat{\bm{w}}$ absorbs the singular value (so its scale
+matches $\bm{w}$), while $\hat{\bm{z}}$ is unit-norm:
+$\|\hat{\bm{z}}\|_2 = 1$.
+
+\paragraph{Step 3 --- sign resolution.}
+SVD is sign-ambiguous: $(\bm{w}, \bm{z})$ and $(-\bm{w}, -\bm{z})$ give
+the same outer product.  We choose the sign that maximises
+$|\text{corr}(\hat{\bm{w}},\, \bm{w})|$:
+\begin{equation}
+  (\wh, \zh) \leftarrow
+    \begin{cases}
+      (-\hat{\bm{w}},\,-\hat{\bm{z}}) & \text{if }
+        |\text{corr}(-\hat{\bm{w}},\bm{w})| > |\text{corr}(\hat{\bm{w}},\bm{w})|,\\
+      (\hat{\bm{w}},\,\hat{\bm{z}}) & \text{otherwise.}
+    \end{cases}
+\end{equation}
+
+\paragraph{Step 4 --- overdispersion.}
+The per-gene $\hat{p}_g$ is estimated from the residuals
+$C_{g,\cdot} - \exp(\hat{w}_g \hat{z}_s + \hat{b}_g)$ via method-of-moments
+(equation~\eqref{eq:p_hat}).
+
+\subsection{Recovery quality (observed results)}
+
+With $G = 50$, $S = 1000$:
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Parameter & Pearson $r$ & MAE\\
+\midrule
+$w_g$ (gene loading)    & $0.991$ & $15.6$\\
+$z_s$ (patient factor)  & $0.983$ & $0.769$\\
+$b_g$ (log-baseline)    & $0.893$ & $0.127$\\
+$p_g$ (overdispersion)  & $0.623$ & ---\\
+\bottomrule
+\end{tabular}
+\end{center}
+The rank-1 factor explains $39.9\%$ of total variance in log1p space.
+
+% ==========================================================================
+\section{AutoEncoder Architecture}
+\label{sec:ae}
+% ==========================================================================
+
+\subsection{Input representation}
+
+The count matrix $C \in \mathbb{Z}_{\geq 0}^{G \times S}$ is first
+log1p-normalised and L2-normalised per patient:
+\begin{equation}
+  \tilde{x}_s = \frac{\log(1 + c_s)}{\|\log(1 + c_s)\|_2},
+  \qquad c_s = C_{\cdot,s} \in \R^G.
+  \label{eq:input_transform}
+\end{equation}
+The AE operates on $X \in \R^{S \times G}$ (patients as rows).
+
+\subsection{Encoder and decoder}
+
+The encoder $f_\phi: \R^G \to \R^K$ and decoder $g_\theta: \R^K \to \R^G$
+are multi-layer perceptrons with hidden dimensions $[64, 32]$, $K = 4$
+latent dimensions, and $\mathrm{Softplus}$ output activations in the decoder
+(to ensure non-negativity in log-space):
+\begin{align}
+  \bm{h} &= f_\phi(\tilde{x}_s) \in \R^K, \label{eq:encoder}\\
+  \hat{x}_s^{\log} &= g_\theta(\bm{h}) \in \R^G_{\geq 0}. \label{eq:decoder}
+\end{align}
+Reconstruction in count space is obtained via $\hat{c}_s = e^{\hat{x}_s^{\log}} - 1$.
+
+\subsection{Loss function}
+
+Training uses a \textbf{Poisson negative log-likelihood} in count space:
+\begin{equation}
+  \mathcal{L}_{\mathrm{Poisson}}
+    = -\frac{1}{S\,G}\sum_{s,g}
+        \bigl[C_{g,s}\log\hat{\lambda}_{g,s} - \hat{\lambda}_{g,s} - \log(C_{g,s}!)\bigr],
+  \quad
+  \hat{\lambda}_{g,s} = \max\!\bigl(e^{\hat{x}_{s,g}^{\log}} - 1,\; 10^{-6}\bigr).
+  \label{eq:poisson_loss}
+\end{equation}
+This loss is minimised by $\hat{\lambda}_{g,s} = \E[C_{g,s}] = \mu_{g,s}$,
+encouraging the AE to recover gene-expression means.
+
+\subsection{Training details}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Hyperparameter & Value\\
+\midrule
+Latent dimension $K$ & $4$\\
+Hidden dimensions & $[64, 32]$\\
+Epochs & $500$\\
+Learning rate & $10^{-3}$\\
+Batch size & $128$\\
+Optimiser & Adam\\
+Loss & Poisson NLL\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Variational AutoEncoder ($\beta$-VAE)}
+
+A $\beta$-VAE variant is also trained for comparison.  The encoder
+produces parameters $(\bm{\mu}_\phi, \log\bm{\sigma}^2_\phi)$ of a diagonal
+Gaussian. The reparameterisation trick gives:
+\begin{equation}
+  \bm{h} = \bm{\mu}_\phi(\tilde{x}_s) +
+            \bm{\sigma}_\phi(\tilde{x}_s) \odot \bm{\varepsilon},
+  \quad \bm{\varepsilon} \sim \N(\bm{0}, I_K).
+\end{equation}
+The objective adds a KL penalty:
+\begin{equation}
+  \mathcal{L}_{\beta\text{-VAE}} =
+    \mathcal{L}_{\mathrm{Poisson}} +
+    \beta \cdot D_{\mathrm{KL}}\!\left(
+      \N(\bm{\mu}_\phi, \mathrm{diag}(\bm{\sigma}^2_\phi))
+      \;\Big\|\;
+      \N(\bm{0}, I_K)
+    \right).
+\end{equation}
+with $\beta = 0.5$.  The KL term encourages latent representations to be
+disentangled and close to a standard Gaussian prior.
+
+% ==========================================================================
+\section{Latent Perturbation Screening}
+\label{sec:screening}
+% ==========================================================================
+
+After training, each latent dimension $\ell \in \{0,\ldots,K-1\}$ is
+subjected to a \emph{in-silico} perturbation experiment.
+
+\subsection{Procedure}
+
+Let $Z = f_\phi(X) \in \R^{S \times K}$ be the encoded patient matrix and
+$\sigma_\ell = \mathrm{std}(Z_{\cdot,\ell})$ the empirical standard deviation
+of dimension $\ell$.  For each perturbation magnitude
+$\delta \in \{-2, -1, 0, 1, 2\}$:
+\begin{align}
+  Z^{(\ell,\delta)} &= Z \text{ with column } \ell \text{ replaced by }
+                       Z_{\cdot,\ell} + \delta\,\sigma_\ell,\\
+  \hat{X}^{(\ell,\delta)} &= g_\theta(Z^{(\ell,\delta)}),\\
+  \hat{C}^{(\ell,\delta)} &= e^{\hat{X}^{(\ell,\delta)}} - 1.
+\end{align}
+
+\subsection{Sensitivity}
+
+The \emph{sensitivity} of PGM parameter $\theta$ to latent dimension
+$\ell$ is the slope of a linear regression of the population-mean estimate
+on $\delta$:
+\begin{equation}
+  s_\ell^\theta = \frac{
+    \sum_\delta (\delta - \bar\delta)\,
+    (\bar\theta^{(\ell,\delta)} - \overline{\bar\theta}^{(\ell)})
+  }{
+    \sum_\delta (\delta - \bar\delta)^2
+  },
+\end{equation}
+where $\bar\theta^{(\ell,\delta)} = \frac{1}{G}\sum_g \hat\theta_g^{(\ell,\delta)}$.
+Computed for $\theta \in \{\hat\lambda, \hat{p}\}$; a large $|s_\ell^\lambda|$
+indicates that dimension $\ell$ primarily encodes mean expression, while
+large $|s_\ell^p|$ indicates overdispersion.
+
+\paragraph{Observed latent dimension classification.}
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+Dim & $s_\ell^\lambda$ & $s_\ell^p$ & Classification\\
+\midrule
+0 & $+1.979$ & $+0.022$ & $\lambda$-dominated\\
+1 & $+0.114$ & $-0.002$ & $\lambda$-dominated\\
+2 & $+0.015$ & $-0.006$ & mixed\\
+3 & $-0.607$ & $-0.040$ & $\lambda$-dominated\\
+\bottomrule
+\end{tabular}
+\end{center}
+All four AE latent dimensions primarily encode mean expression intensity
+($\lambda$), consistent with Poisson loss training.
+
+% ==========================================================================
+\section{Causal Alignment Test}
+\label{sec:alignment}
+% ==========================================================================
+
+\subsection{Causal hypothesis}
+
+If AE latent dimension $\ell$ encodes the causal factor $z_s$, then
+increasing $\ell$ by $\delta\,\sigma_\ell$ should shift the decoded gene
+expression \emph{in the direction of the true gene loading vector}
+$\bm{w}$. Formally, the expected per-gene mean count shift
+under $\doop(z_s \to z_s + \delta)$ is:
+\begin{equation}
+  \Delta\mu_g = \mu_g \cdot (e^{w_g\,\delta} - 1)
+  \approx \mu_g\,w_g\,\delta \quad \text{for small }\delta.
+\end{equation}
+The induced shift vector $\Delta\bm{\mu} \in \R^G$ is thus
+\emph{proportional to} $\bm{w}$ (approximately).
+
+\subsection{Test statistic}
+
+For each latent dimension $\ell$, compute the decoded per-gene mean count
+shift at $\delta = +1$ (positive perturbation):
+\begin{equation}
+  \Delta^{(\ell)}_g =
+    \frac{1}{S}\sum_s
+    \left[
+      \hat{C}^{(\ell,+1)}_{g,s} - \hat{C}^{(\ell,0)}_{g,s}
+    \right],
+  \qquad g = 1,\ldots,G.
+\end{equation}
+The \textbf{causal alignment score} for dimension $\ell$ is the cosine
+similarity between this empirical shift and the true loading vector:
+\begin{equation}
+  \rho_\ell =
+    \cos\!\bigl(\Delta^{(\ell)},\, \bm{w}\bigr)
+    = \frac{\Delta^{(\ell)\top}\bm{w}}
+           {\|\Delta^{(\ell)}\|\;\|\bm{w}\|}.
+  \label{eq:cos_align}
+\end{equation}
+The overall test statistic is
+\begin{equation}
+  \rho^* = \max_\ell \rho_\ell.
+  \label{eq:rho_star}
+\end{equation}
+
+\subsection{Null distribution and Z-score}
+
+A null distribution for $\rho^*$ is constructed empirically: draw
+$B = 500$ random directions $\bm{r}^{(b)} \sim \N(\bm{0}, I_G)$ and compute
+$\rho_{\mathrm{null}}^{(b)} = \cos(\bm{r}^{(b)}, \bm{w})$.  The null has
+\begin{equation}
+  \mu_0 = \E[\rho_{\mathrm{null}}] \approx 0, \qquad
+  \sigma_0 = \mathrm{std}(\rho_{\mathrm{null}}) \approx G^{-1/2}.
+\end{equation}
+The Z-score against this null is:
+\begin{equation}
+  Z = \frac{\rho^* - \mu_0}{\sigma_0}.
+  \label{eq:z_score}
+\end{equation}
+We declare \emph{causal alignment detected} when $Z > 1.65$
+(one-sided $p < 0.05$).
+
+\subsection{Observed results}
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+Dim $\ell$ & $\overline{\Delta^{(\ell)}}$ & $\mathrm{corr}(\Delta^{(\ell)}, \bm{w})$ & $\rho_\ell$ & \\
+\midrule
+0 & $2.85$  & $0.339$ & $0.349$ &\\
+1 & $2.27$  & $0.398$ & $0.409$ &\\
+2 & $2.83$  & $0.160$ & $0.178$ &\\
+3 & $16.33$ & $0.490$ & $0.501$ & $\leftarrow$ best\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Null baseline: $\mu_0 = -0.004$, $\sigma_0 = 0.143$.
+
+\medskip
+\noindent Best dimension: $\ell^* = 3$,\quad
+$\rho^* = 0.501$,\quad
+$Z = 3.54$ \quad ($p < 0.001$).
+
+\medskip
+\noindent \textbf{Interpretation.} Latent dimension 3 of the AE
+shifts decoded gene expression in a direction that is significantly
+correlated with the true causal gene loading vector $\bm{w}$.
+This dimension constitutes a \emph{causal handle} on the underlying
+factor $z_s$: increasing it acts like a partial
+$\doop(z_s \to z_s + \delta)$ intervention.
+
+% ==========================================================================
+\section{Reproducibility and Robustness}
+\label{sec:reproducibility}
+% ==========================================================================
+
+\subsection{Multi-seed evaluation}
+
+The full pipeline (stages 4--7) is repeated for five random seeds
+$\{0, 42, 123, 1234, 12345\}$, re-initialising only the AE weights (the
+PGM and data remain fixed).
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+Seed & Recon $r$ & Best dim & $\rho^*$ & $Z$\\
+\midrule
+$0$     & $0.992$ & $3$ & $0.501$ & $3.54$\\
+$42$    & $0.989$ & $2$ & $0.594$ & $4.19$\\
+$123$   & $0.988$ & $3$ & $0.547$ & $3.86$\\
+$1234$  & $0.990$ & $2$ & $0.306$ & $2.17$\\
+$12345$ & $0.987$ & $3$ & $0.267$ & $1.90$\\
+\midrule
+Mean $\pm$ std & $0.989 \pm 0.002$
+               & ---
+               & $0.443 \pm 0.132$
+               & $3.13 \pm 0.92$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All five seeds exceed the $Z = 1.65$ threshold
+($p < 0.05$). The best dimension varies (mostly dim 2 or 3),
+reflecting the rotational ambiguity of unconstrained AE training, but
+in every case \emph{at least one} dimension encodes the causal
+direction.
+
+\subsection{$\beta$-VAE comparison}
+
+The $\beta$-VAE with $\beta = 0.5$ achieves $\rho^* = 0.457$ ($Z = 3.23$),
+also passing the significance threshold but with a slightly lower causal
+alignment than the standard AE ($\rho^* = 0.501$).  The KL penalty
+encourages posterior collapse when $\beta$ is too large; at $\beta = 0.5$
+it provides only mild regularisation, insufficient to induce
+disentanglement of the causal factor.
+
+% ==========================================================================
+\section{What Is and Is Not Captured}
+\label{sec:summary}
+% ==========================================================================
+
+\subsection{Information preserved after AE compression}
+
+Stage 5 evaluates whether the hierarchical PGM can be accurately
+re-inferred from AE-decoded counts.  Fitting a rank-1 factor model
+on decoded counts and comparing to ground truth:
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Parameter & Original $\to$ Reconstructed corr & Pass?\\
+\midrule
+$w_g$ (gene loading)   & $0.991 \to 0.995$ & \checkmark \\
+$z_s$ (patient factor) & $0.983 \to 0.983$ & \checkmark \\
+$p_g$ (overdispersion) & $0.623 \to 0.222$ & $\times$   \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The AE with Poisson NLL loss fully preserves the mean-expression
+structure ($\bm{w}$, $\bm{z}$, $\bm{b}$) but substantially degrades
+overdispersion ($p_g$).  This is expected: Poisson loss is minimised by
+the conditional mean; it carries no information about higher moments.
+To capture $p_g$, a Negative Binomial reconstruction loss would be required.
+
+\subsection{Causal identifiability}
+
+The positive alignment test ($Z = 3.54$) confirms that the AE latent
+space contains a direction that is statistically significantly aligned
+with the true causal loading $\bm{w}$.  However, the causal factor is
+\emph{not disentangled}: no single latent dimension exclusively encodes
+$z_s$; and the best dimension varies across seeds, reflecting
+rotational ambiguity.
+
+\begin{remark}[Nonlinear ICA perspective]
+Without structural constraints, a universal approximator trained on
+observational data from a single environment can only recover the causal
+factor up to an arbitrary invertible transformation
+\cite{hyvarinen2019nonlinear}.  The result here is consistent with this
+bound: the AE finds a \emph{linear combination} of latent dimensions
+that correlates with $\bm{w}$, but not a single disentangled coordinate.
+\end{remark}
+
+\subsection{Prospects for stronger identifiability}
+
+The following extensions would provide stronger causal identifiability:
+\begin{enumerate}
+  \item \textbf{Multi-environment training / IRM.} Providing data from
+        multiple intervention regimes (e.g.\ samples from
+        $\doop(z_s \sim \N(0,1))$ and $\doop(z_s \sim \N(2,1))$) and applying
+        an Invariant Risk Minimisation penalty would force the model to
+        identify a representation that is stable across environments,
+        which by theory corresponds to the causal variables.
+  \item \textbf{Contrastive / supervised signal.} Even a small number of
+        labelled pairs (patient $s$ before and after intervention) would
+        suffice for metric learning to separate the causal axis.
+  \item \textbf{Negative Binomial ELBO.} A proper Negative Binomial
+        reconstruction loss would enable joint estimation of $(\mu, p)$
+        in the decoder, potentially making $p_g$ identifiable.
+  \item \textbf{Scaling.} Increasing $G$ (number of genes) strengthens
+        the signal-to-noise ratio of the rank-1 factor relative to
+        gene-specific noise, making the causal factor easier to isolate.
+\end{enumerate}
+
+% ==========================================================================
+\section{Complete Achievement Summary}
+\label{sec:achievements}
+% ==========================================================================
+
+\begin{center}
+\begin{tabular}{clc}
+\toprule
+Level & Description & Status\\
+\midrule
+1 & Hierarchical PGM + Perturbation Engine + Factor Recovery & \checkmark\\
+2 & AE Preserves PGM Inferability After Compression           & \checkmark\\
+3 & $\geq 1$ Latent Dim Shows Structured PGM Effect           & \checkmark\\
+4 & Latent Dim Aligns with True Causal $z$-Factor Direction   & \checkmark\\
+S3 & Multi-Seed Reproducibility Confirmed ($5/5$ seeds)       & \checkmark\\
+S4 & VAE Shows Causal Alignment                               & \checkmark\\
+\midrule
+& \textbf{Overall} & $6/6$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The one failure case is the overdispersion ($p_g$) causal
+alignment, which is expected given the Poisson training loss.
+
+% ==========================================================================
+\appendix
+% ==========================================================================
+\section{Nonlinear ICA and the Identifiability Problem}
+\label{sec:nica}
+% ==========================================================================
+
+\subsection{What is Independent Component Analysis?}
+
+\emph{Independent Component Analysis} (ICA) is a classical method for
+recovering statistically independent source signals $\bm{s} \in \R^K$
+from observed mixtures $\bm{x} = A\bm{s}$, where $A$ is an unknown
+mixing matrix~\cite{hyvarinen2001ica}.  In the \textbf{linear} case
+($\bm{x} = A\bm{s}$, $\bm{s}$ non-Gaussian), Darmois (1953) and
+Hyv\"arinen \& Oja (2000) showed that the sources are identifiable up to
+permutation and scaling --- a strikingly strong result.
+
+Our model is a special case: $\log M = \bm{w}\bm{z}^\top +
+\bm{b}\bm{1}^\top$, a rank-1 linear mixture in log-expression space.
+So in principle, SVD recovers $\bm{w}$ and $\bm{z}$ exactly, which we
+verified (corr $> 0.99$ in Section~\ref{sec:pgm}).
+The hard question is: can a \emph{neural network trained on raw counts}
+do the same?
+
+\subsection{Why nonlinear ICA is fundamentally harder}
+
+In the \textbf{nonlinear} setting the model is
+$\bm{x} = f(\bm{s})$ where $f: \R^K \to \R^G$ is an arbitrary smooth
+function.  An autoencoder learns $\hat{f}^{-1}: \R^G \to \R^K$; we
+hope this inverse recovers $\bm{s}$.
+
+The bad news is the following theorem (H\"alva \& Hyv\"arinen,
+2021~\cite{halva2021disentanglement}; Locatello et al.,
+2019~\cite{locatello2019challenging}):
+
+\begin{quote}
+\itshape
+Without additional constraints, the sources $\bm{s}$ of a nonlinear ICA
+model are not identifiable.  For any observed distribution $p(\bm{x})$
+there exist infinitely many mixing functions $f$ and source distributions
+$p(\bm{s})$ that generate it exactly.  In particular, an encoder can
+``mix'' the true causal factors arbitrarily without any increase in
+reconstruction loss.
+\end{quote}
+
+\noindent Concretely: if a 4-dimensional AE perfectly reconstructs the
+counts, its four latent dimensions could each be an arbitrary nonlinear
+combination of $z_s$ and noise --- and we could not tell from the
+reconstruction loss alone.
+
+\subsection{What structure breaks the impossibility?}
+
+Several structural assumptions are known to restore identifiability.
+We list them from strongest signal to weakest:
+
+\begin{enumerate}
+
+\item \textbf{Multiple environments / auxiliary variables.}
+  Hyv\"arinen \emph{et al.}~\cite{hyvarinen2019nonlinear} showed that
+  if an auxiliary variable $u$ (e.g.\ a known environment label,
+  time-point, or experimental condition) is available such that $p(\bm{s}
+  \mid u)$ changes but $f$ does not, then the sources are identifiable
+  up to a component-wise invertible transformation.  This is the basis
+  of \emph{Invariant Risk Minimisation}~\cite{arjovsky2019irm} (IRM)
+  and \emph{Contrastive Learning of Structured World
+  Models}~\cite{scholkopf2021toward}.
+
+  \emph{Concretely for us:} if we train on cells from untreated
+  \emph{and} drug-treated patients with condition labels, the IRM
+  penalty forces the model to represent the drug effect ($z_s$) in a
+  stable latent direction.
+
+\item \textbf{Sparse mechanism shift.}
+  Sch\"olkopf \emph{et al.}~\cite{scholkopf2021toward} argue that
+  causal variables are those whose marginal distribution changes across
+  environments while their \emph{causal mechanisms} remain invariant.
+  If only a few latent components change between environments (sparse
+  shift), the causal factor is identifiable.
+
+\item \textbf{Interventional data / known targets.}
+  If some experiments directly perturb a known set of genes (e.g.\
+  CRISPR knockouts), we can use the distribution of perturbed cells as
+  a constraint.  The \emph{GIES} and \emph{DiffVAE} frameworks exploit
+  this structure~\cite{scholkopf2021toward}.
+
+\item \textbf{Temporal structure (flows).}
+  If observations have a natural time ordering (developmental
+  trajectories), the sources can be identified from the dynamics of
+  $p(\bm{x}_t \mid \bm{x}_{t-1})$~\cite{hyvarinen2019nonlinear}.
+
+\item \textbf{Sufficient non-Gaussianity + volume preservation.}
+  Under mild distributional assumptions on $\bm{s}$ and a volume-preserving
+  (orthogonal) mixing, identifiability is partially restored even without
+  auxiliary data~\cite{halva2021disentanglement}.
+
+\end{enumerate}
+
+\subsection{Where our AE sits on this spectrum}
+
+Our AE uses \textbf{none} of the above structural constraints:
+\begin{itemize}
+  \item Single observational environment (no condition labels).
+  \item Reconstruction loss only (no invariance penalty).
+  \item No prior on the latent space beyond unit Gaussian (in the VAE case).
+\end{itemize}
+
+The theory therefore predicts that the latent space will be an arbitrary
+invertible transformation of the true sources.  The empirical result is
+consistent: we find $Z > 1.65$ in all seeds ($Z \approx 3.1$ on average),
+meaning the causal factor $z_s$ is encoded somewhere in the latent space,
+but not in a single disentangled coordinate --- the best alignment
+dimension varies across seeds (dim 2 or 3), reflecting the rotational
+ambiguity.
+
+\subsection{Intuition: the ``mixing bowl'' picture}
+
+A useful mental model is a mixing bowl (Figure~\ref{fig:mixing}).
+The AE takes the true causal soup $(z_s, \text{noise})$ and stirs it
+into four latent coordinates.  Because the reconstruction loss only
+cares about the final dish (the counts), infinitely many stirring
+patterns work equally well.  Adding a structural constraint (an
+environment label, an IRM penalty) is like placing a partition in the
+bowl that the stirrer cannot cross: now the causal ingredient must stay
+on one side, making it identifiable.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[>=Stealth, thick, node distance=0.5cm]
+  % True sources
+  \node[draw, rounded corners, fill=blue!10, minimum width=2.0cm,
+        minimum height=1.6cm, align=center, font=\small]
+        (src) at (0,0) {$z_s$\\[2pt]\scriptsize(causal)\\[2pt]\tiny$+$ noise};
+
+  % Nonlinear mixing
+  \node[draw, fill=orange!15, rounded corners,
+        minimum width=2.2cm, minimum height=1.0cm,
+        align=center, font=\small]
+        (mix) at (4.2,0) {nonlinear\\AE encoder $f^{-1}$};
+
+  % Latent space
+  \node[draw, rounded corners, fill=gray!12, minimum width=2.0cm,
+        minimum height=1.6cm, align=center, font=\small]
+        (lat) at (8.4,0) {$h_1,h_2$\\$h_3,h_4$\\[-2pt]\scriptsize(mixed)};
+
+  % Arrows
+  \draw[->] (src) -- (mix) node[midway,above,font=\scriptsize]{$\bm{x}=f(\bm{s})$};
+  \draw[->] (mix) -- (lat) node[midway,above,font=\scriptsize]{encode};
+
+  % Ambiguity annotation
+  \draw[<->, dashed, red!70, thick]
+        ($(lat.south west)+(0.1,-0.3)$) -- ($(lat.south east)+(-0.1,-0.3)$)
+        node[midway, below, font=\scriptsize, red!70]
+        {arbitrary mixing of $z_s$ into $h_1\ldots h_4$};
+
+  % IRM constraint
+  \node[draw=green!50!black, dashed, rounded corners,
+        minimum width=2.2cm, minimum height=1.0cm,
+        align=center, font=\scriptsize, text=green!40!black]
+        (irm) at (4.2,-2.2)
+        {+ env.\ labels\\or IRM penalty};
+  \draw[->, green!50!black, dashed]
+        (irm) -- (mix)
+        node[midway, right, font=\scriptsize, text=green!40!black]
+        {breaks ambiguity};
+\end{tikzpicture}
+\caption{%
+  The identifiability problem in a nutshell.
+  An unconstrained encoder can mix the causal factor $z_s$ arbitrarily
+  across all latent dimensions with no penalty in reconstruction loss.
+  Adding environmental supervision or an invariance constraint
+  (green dashed box) forces the causal factor into a stable, separated
+  coordinate.
+}
+\label{fig:mixing}
+\end{figure}
+
+% ==========================================================================
+\begin{thebibliography}{99}
+
+\bibitem{hyvarinen2001ica}
+  A.\ Hyv\"arinen, J.\ Karhunen, and E.\ Oja,
+  \textit{Independent Component Analysis},
+  Wiley, 2001.
+
+\bibitem{hyvarinen2019nonlinear}
+  A.\ Hyv\"arinen, H.\ Sasaki, and R.\ Turner,
+  ``Nonlinear ICA using auxiliary variables and generalized contrastive
+  learning,''
+  \textit{Proceedings of the 22nd International Conference on Artificial
+  Intelligence and Statistics (AISTATS)}, pp.\ 859--868, 2019.
+
+\bibitem{halva2021disentanglement}
+  H.\ H\"alv\"a and A.\ Hyv\"arinen,
+  ``Hidden Markov nonlinear ICA: unsupervised learning from nonstationary time
+  series,''
+  \textit{Proceedings of the 37th Conference on Uncertainty in Artificial
+  Intelligence (UAI)}, 2021.
+
+\bibitem{locatello2019challenging}
+  F.\ Locatello, S.\ Bauer, M.\ Lucic, G.\ R\"atsch, S.\ Gelly,
+  B.\ Sch\"olkopf, and O.\ Bachem,
+  ``Challenging common assumptions in the unsupervised learning of
+  disentangled representations,''
+  \textit{Proceedings of the 36th International Conference on Machine
+  Learning (ICML)}, pp.\ 4114--4124, 2019.
+
+\bibitem{pearl2009causality}
+  J.\ Pearl,
+  \textit{Causality: Models, Reasoning, and Inference},
+  2nd ed., Cambridge University Press, 2009.
+
+\bibitem{scholkopf2021toward}
+  B.\ Sch\"olkopf, F.\ Locatello, S.\ Bauer, N.\ R.\ Ke, N.\ Kalchbrenner,
+  A.\ Goyal, and Y.\ Bengio,
+  ``Toward causal representation learning,''
+  \textit{Proceedings of the IEEE}, 109(5):612--634, 2021.
+
+\bibitem{arjovsky2019irm}
+  M.\ Arjovsky, L.\ Bottou, I.\ Gulrajani, and D.\ Lopez-Paz,
+  ``Invariant risk minimization,''
+  \textit{arXiv:1907.02893}, 2019.
+
+\bibitem{khemakhem2020variational}
+  I.\ Khemakhem, D.\ Kingma, R.\ Monti, and A.\ Hyv\"arinen,
+  ``Variational autoencoders and nonlinear ICA: a unifying framework,''
+  \textit{Proceedings of the 23rd International Conference on Artificial
+  Intelligence and Statistics (AISTATS)}, pp.\ 2207--2217, 2020.
+
+\end{thebibliography}
+
+\end{document}

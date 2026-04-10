@@ -1,0 +1,71 @@
+# Experiment configuration
+# Follows the recommended scaling order from the analysis:
+#   Step 1: N=100 (more patients for stable MOM p-estimation)
+#   Step 2: Poisson loss (encodes mean intensity; use "mse" to compare)
+#   Step 3: multi_seed: run AE + latent stages across seeds for reproducibility
+#   Step 4: run_vae: also train a VAE and compare
+#   Step 5: scale to n_genes=1000 after all previous steps pass
+
+pgm:
+  type: "hierarchical"   # "simple" | "hierarchical"
+  # --- simple PGM params (used when type=simple) ---
+  n_genes: 50
+  n_patients: 1000
+  lambda_poisson_rate: 20.0
+  p_beta_a: 2.0
+  p_beta_b: 5.0
+  seed: 42
+
+hierarchical_pgm:
+  n_genes: 50
+  n_patients: 1000
+  loading_std: 1.0       # w_g ~ N(0, loading_std)
+  baseline_mean: 1.5     # b_g ~ N(baseline_mean, baseline_std)
+  baseline_std: 0.5
+  p_beta_a: 2.0
+  p_beta_b: 5.0
+  seed: 42
+
+hierarchical_perturbation:
+  z_delta: 2.0           # do(z_s = z_s + delta) — primary causal test
+  target_patients: null  # null = all patients
+  target_genes_p: [0, 1, 2]
+  p_beta_a_perturbed: 1.0
+  target_genes_loading: [0, 1, 2]
+  loading_scale: 2.0
+
+perturbation:
+  target_genes: [0, 1, 2]
+  p_beta_a_perturbed: 1.0
+  lambda_shift: 3.0
+
+autoencoder:
+  latent_dim: 4
+  hidden_dims: [64, 32]  # slightly wider: more capacity for N=1000
+  n_epochs: 500
+  lr: 0.001
+  batch_size: 128        # larger batch for efficiency at N=1000
+  seed: 0
+  loss_type: "poisson"
+
+latent_perturbation:
+  magnitudes: [-2.0, -1.0, 0.0, 1.0, 2.0]
+
+# Step 3: reproducibility across seeds
+multi_seed:
+  enabled: true
+  seeds: [0, 42, 123, 1234, 12345]
+
+# Step 4: VAE comparison
+vae:
+  enabled: true
+  latent_dim: 4
+  hidden_dims: [64, 32]
+  n_epochs: 500
+  lr: 0.001
+  batch_size: 128
+  beta: 0.5
+  loss_type: "poisson"
+  seed: 0
+
+output_dir: results
